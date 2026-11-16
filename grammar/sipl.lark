@@ -1,0 +1,54 @@
+?start: program
+
+program: "begin" stmt "end"                              -> np1_program
+
+?stmt: stmt ";" stmt_atom                                -> ns2_seq
+     | stmt_atom
+
+?stmt_atom: IDENT ":=" aexp                              -> ns1_assign
+          | "if" bexp "then" stmt_atom "else" stmt_atom  -> ns3_if
+          | "while" bexp "do" stmt_atom                  -> ns4_while
+          | "begin" stmt "end"                           -> ns5_block
+          | "skip"                                       -> ns6_skip
+
+?aexp: aexp "+" aterm                                    -> na3_add
+     | aexp ("-" | "−") aterm                            -> na4_sub
+     | aterm
+
+?aterm: aterm ("*" | "∗") afactor                        -> na5_mult
+      | aterm ("div" | "/") afactor                      -> na7_div
+      | aterm ("mod" | "%") afactor                      -> na8_mod
+      | afactor
+
+?afactor: ("-" | "−") afactor                            -> na_unary_neg
+        | "(" aexp ")"                                   -> na6_paren
+        | IDENT                                          -> na2_var
+        | NUMBER                                         -> na1_num
+
+?bexp: bexp ("∨" | "or" | "||") band                     -> nb3_or
+     | band
+
+?band: band ("∧" | "and" | "&&") bnot                    -> nb10_and
+     | bnot
+
+?bnot: ("¬" | "not" | "!") bnot                          -> nb4_neg
+     | batom
+
+?batom: "(" bexp ")"                                     -> nb5_paren
+      | aexp ("=" | "==") aexp                           -> nb1_eq
+      | aexp ">" aexp                                    -> nb2_gt
+      | aexp (">=" | "≥") aexp                           -> nb6_ge
+      | aexp "<" aexp                                    -> nb7_lt
+      | aexp ("<=" | "≤") aexp                           -> nb8_le
+      | aexp ("!=" | "<>" | "≠") aexp                    -> nb9_ne
+
+NUMBER: /-?[0-9]+/
+IDENT: /(?!\b(?:begin|end|if|then|else|while|do|skip|div|mod|or|and|not)\b)[A-Za-z_][A-Za-z0-9_]*/
+
+COMMENT_LINE: /(#|\/\/)[^\n]*/
+COMMENT_BLOCK: /\/\*[\s\S]*?\*\//
+WS: /[ \t\r\n]+/
+
+%ignore WS
+%ignore COMMENT_LINE
+%ignore COMMENT_BLOCK
