@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0",
+  "language": "SIPL",
+  "cases": [
+    {
+      "id": "power_5_2",
+      "category": "execution",
+      "source": "begin\n  R := 1;\n  while Y > 0 do\n  begin\n    R := R * X;\n    Y := Y - 1\n  end\nend",
+      "initial_state": { "X": 5, "Y": 2 },
+      "expected": {
+        "exit_code": 0,
+        "final_state": { "R": 25, "X": 5, "Y": 0 },
+        "ast": {
+          "kind": "Program",
+          "body": {
+            "kind": "Seq",
+            "first": { "kind": "Assign", "var": "R", "expr": { "kind": "NumberLiteral", "value": 1 } },
+            "second": { "kind": "WhileDo", "condition": { "kind": "RelOp", "op": ">" } }
+          }
+        }
+      }
+    },
+    {
+      "id": "integer_division_7_4",
+      "category": "execution",
+      "source": "begin\n  R := 0;\n  while X >= Y do\n  begin\n    X := X - Y;\n    R := R + 1\n  end\nend",
+      "initial_state": { "X": 7, "Y": 4 },
+      "expected": {
+        "exit_code": 0,
+        "final_state": { "R": 1, "X": 3, "Y": 4 }
+      }
+    },
+    {
+      "id": "factorial_5",
+      "category": "execution",
+      "source": "begin\n  R := 1;\n  I := 1;\n  while I <= N do\n  begin\n    R := R * I;\n    I := I + 1\n  end\nend",
+      "initial_state": { "N": 5 },
+      "expected": {
+        "exit_code": 0,
+        "final_state": { "I": 6, "N": 5, "R": 120 }
+      }
+    },
+    {
+      "id": "div_mod_and_precedence",
+      "category": "execution",
+      "source": "begin\n  X := 2 + 3 * 4;\n  Y := X div 3;\n  Z := X mod 5;\n  if Y = 4 and Z != 0 then skip else Z := 0\nend",
+      "initial_state": {},
+      "expected": {
+        "exit_code": 0,
+        "final_state": { "X": 14, "Y": 4, "Z": 4 }
+      }
+    },
+    {
+      "id": "unicode_bool_and_negatives",
+      "category": "execution",
+      "source": "begin\n  A := -3;\n  B := 4;\n  if ¬(A > 0) ∧ (B ≥ 4 ∨ A = 0) then R := A ∗ -2 + (10 − 3) else R := -1\nend",
+      "initial_state": {},
+      "expected": {
+        "exit_code": 0,
+        "final_state": { "A": -3, "B": 4, "R": 13 }
+      }
+    },
+    {
+      "id": "runtime_undefined_var",
+      "category": "runtime_error",
+      "source": "begin\n  R := X + 1\nend",
+      "initial_state": {},
+      "expected": {
+        "exit_code": 1,
+        "error_code": "RUN001",
+        "error_line": 2
+      }
+    },
+    {
+      "id": "runtime_div_zero",
+      "category": "runtime_error",
+      "source": "begin\n  R := 10 div 0\nend",
+      "initial_state": {},
+      "expected": {
+        "exit_code": 1,
+        "error_code": "RUN002",
+        "error_line": 2
+      }
+    },
+    {
+      "id": "runtime_infinite_loop",
+      "category": "runtime_error",
+      "source": "begin\n  while 1 = 1 do\n    skip\nend",
+      "initial_state": {},
+      "max_steps": 50,
+      "expected": {
+        "exit_code": 1,
+        "error_code": "RUN003",
+        "error_line": 2
+      }
+    },
+    {
+      "id": "syntax_missing_begin",
+      "category": "syntax_error",
+      "source": "X := 1",
+      "expected": {
+        "exit_code": 2,
+        "error_code": "SYN001",
+        "error_line": 1
+      }
+    },
+    {
+      "id": "syntax_trailing_semicolon",
+      "category": "syntax_error",
+      "source": "begin\n  X := 1;\nend",
+      "expected": {
+        "exit_code": 2,
+        "error_code": "SYN004",
+        "error_line": 2
+      }
+    },
+    {
+      "id": "syntax_if_no_else",
+      "category": "syntax_error",
+      "source": "begin\n  if X > 0 then X := 1\nend",
+      "expected": {
+        "exit_code": 2,
+        "error_code": "SYN001",
+        "error_line": 3
+      }
+    },
+    {
+      "id": "syntax_keyword_var",
+      "category": "syntax_error",
+      "source": "begin\n  while := 5\nend",
+      "expected": {
+        "exit_code": 2,
+        "error_line": 2
+      }
+    }
+  ]
+}
