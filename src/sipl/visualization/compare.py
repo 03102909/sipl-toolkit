@@ -1,8 +1,7 @@
 import re
 from typing import Any
 
-from sipl.lexer import ParseNode
-from sipl.parser import ParseResult
+from sipl.parser import ParseNode, ParseResult
 from sipl.visualization.ast_viz import render_ast_svg
 from sipl.visualization.parse_tree import render_parse_tree_svg, verify_parse_tree_yield
 

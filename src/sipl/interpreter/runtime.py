@@ -35,13 +35,15 @@ class ExecutionResult:
     trace: ExecutionTrace
 
     def to_dict(self, include_trace: bool = False) -> dict[str, Any]:
-        d: dict[str, Any] = {
+        data: dict[str, Any] = {
             "initial_state": dict(self.initial_state),
             "final_state": dict(self.final_state),
             "steps_executed": self.steps_executed,
             "status": self.trace.status,
         }
-        return {**d, "trace": self.trace.to_dict()} if include_trace else d
+        if include_trace:
+            data["trace"] = self.trace.to_dict()
+        return data
 
 
 class Interpreter:
@@ -73,10 +75,18 @@ class Interpreter:
     def _finish(
         self, status: str, root: Program, init_s: dict[str, int], final_s: dict[str, int], diag: Diagnostic | None
     ) -> ExecutionTrace:
-        ev_t = TraceEventType.EXECUTION_FINISHED
-        err_d = diag.to_dict() if diag else None
-        ev = trace.ExecutionFinished(ev_t, self.steps, root.node_id, root.span, self.steps, status, final_s, err_d)
-        self.emit(ev)
+        err_dict = diag.to_dict() if diag else None
+        event = trace.ExecutionFinished(
+            TraceEventType.EXECUTION_FINISHED,
+            self.steps,
+            root.node_id,
+            root.span,
+            self.steps,
+            status,
+            final_s,
+            err_dict,
+        )
+        self.emit(event)
         self.last_trace = ExecutionTrace(init_s, final_s, self.steps, status, tuple(self.events), diag)
         return self.last_trace
 
@@ -84,24 +94,40 @@ class Interpreter:
         ast_root = parse(program) if isinstance(program, str) else program
         state = ExecutionState(initial_state)
         init_snap = state.snapshot()
-        self.events, self.steps = [], 0
+        self.events = []
+        self.steps = 0
+
         try:
             self.exec_stmt(ast_root.body, state)
         except SIPLRuntimeError as exc:
             self._finish("error", ast_root, init_snap, state.snapshot(), exc.diagnostic)
             raise
+
         final_snap = state.snapshot()
         tr = self._finish("completed", ast_root, init_snap, final_snap, None)
         return ExecutionResult(ast_root, init_snap, final_snap, self.steps, tr)
 
     def exec_stmt(self, stmt: Stmt, state: ExecutionState) -> None:
         step = self.tick(stmt.span)
-        nid, sp, sk, rid = stmt.node_id, stmt.span, stmt.kind, stmt.rule_id
-        self.emit(trace.BeforeStatement(TraceEventType.BEFORE_STATEMENT, step, nid, sp, sk, rid, state.snapshot()))
+        self.emit(
+            trace.BeforeStatement(
+                TraceEventType.BEFORE_STATEMENT,
+                step,
+                stmt.node_id,
+                stmt.span,
+                stmt.kind,
+                stmt.rule_id,
+                state.snapshot(),
+            )
+        )
 
         if isinstance(stmt, ast.Assign):
-            old_v, new_v = state.set(stmt.var, self.eval_aexpr(stmt.expr, state))
-            self.emit(trace.VariableChanged(TraceEventType.VARIABLE_CHANGED, step, nid, sp, stmt.var, old_v, new_v))
+            old_val, new_val = state.set(stmt.var, self.eval_aexpr(stmt.expr, state))
+            self.emit(
+                trace.VariableChanged(
+                    TraceEventType.VARIABLE_CHANGED, step, stmt.node_id, stmt.span, stmt.var, old_val, new_val
+                )
+            )
         elif isinstance(stmt, ast.Seq):
             self.exec_stmt(stmt.first, state)
             self.exec_stmt(stmt.second, state)
@@ -118,13 +144,32 @@ class Interpreter:
         elif not isinstance(stmt, ast.Skip):
             raise AssertionError(f"Unsupported statement AST node: {type(stmt).__name__}")
 
-        self.emit(trace.AfterStatement(TraceEventType.AFTER_STATEMENT, self.steps, nid, sp, sk, rid, state.snapshot()))
+        self.emit(
+            trace.AfterStatement(
+                TraceEventType.AFTER_STATEMENT,
+                self.steps,
+                stmt.node_id,
+                stmt.span,
+                stmt.kind,
+                stmt.rule_id,
+                state.snapshot(),
+            )
+        )
 
     def eval_cond_with_trace(self, cond: BExpr, state: ExecutionState, step: int) -> bool:
-        res, txt, snap = self.eval_bexpr(cond, state), format_expr(cond), state.snapshot()
-        ev = trace.ConditionEvaluated(TraceEventType.CONDITION_EVALUATED, step, cond.node_id, cond.span, txt, res, snap)
-        self.emit(ev)
-        return res
+        result = self.eval_bexpr(cond, state)
+        self.emit(
+            trace.ConditionEvaluated(
+                TraceEventType.CONDITION_EVALUATED,
+                step,
+                cond.node_id,
+                cond.span,
+                format_expr(cond),
+                result,
+                state.snapshot(),
+            )
+        )
+        return result
 
     def eval_aexpr(self, expr: AExpr, state: ExecutionState) -> int:
         if isinstance(expr, ast.NumberLiteral):
@@ -143,7 +188,8 @@ class Interpreter:
                 return -operand
             raise AssertionError(f"Unsupported unary operator: {expr.op}")
         if isinstance(expr, ast.BinaryArithOp):
-            left, right = self.eval_aexpr(expr.left, state), self.eval_aexpr(expr.right, state)
+            left = self.eval_aexpr(expr.left, state)
+            right = self.eval_aexpr(expr.right, state)
             if expr.op in ("div", "mod") and right == 0:
                 kind_name = "division" if expr.op == "div" else "modulo"
                 raise SIPLRuntimeError(Diagnostic("RUN002", "error", f"Integer {kind_name} by zero", expr.span))

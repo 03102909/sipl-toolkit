@@ -33,27 +33,36 @@ def emit_diag(
 
 
 def render_viz_payload(target: str, fmt: str, source: str, parsed: ParseResult) -> str:
-    pt, root, toks = parsed.parse_tree, parsed.ast, parsed.tokens
-
-    def d_json(obj: Any) -> str:
-        return json.dumps(obj, indent=2, ensure_ascii=False)
-
-    table = {
-        ("parse-tree", "text"): lambda: parse_tree.render_parse_tree_text(pt, source),
-        ("parse-tree", "json"): lambda: d_json(parse_tree.render_parse_tree_json(pt, source, toks)),
-        ("parse-tree", "dot"): lambda: parse_tree.render_parse_tree_dot(pt, source),
-        ("parse-tree", "svg"): lambda: parse_tree.render_parse_tree_svg(pt, source),
-        ("ast", "text"): lambda: ast_viz.render_ast_text(root, source),
-        ("ast", "json"): lambda: d_json(ast_viz.render_ast_json(root, source)),
-        ("ast", "dot"): lambda: ast_viz.render_ast_dot(root, source),
-        ("ast", "svg"): lambda: ast_viz.render_ast_svg(root, source),
-        ("compare", "text"): lambda: compare.render_comparison_text(parsed),
-        ("compare", "json"): lambda: d_json(compare.render_comparison_json(parsed)),
-        ("compare", "svg"): lambda: compare.render_comparison_svg(parsed),
-    }
-    if (target, fmt) not in table:
-        raise ValueError(f"Unsupported target/format combination: {target}/{fmt}")
-    return table[(target, fmt)]()
+    pt = parsed.parse_tree
+    root = parsed.ast
+    if target == "parse-tree":
+        if fmt == "text":
+            return parse_tree.render_parse_tree_text(pt, source)
+        if fmt == "json":
+            return json.dumps(
+                parse_tree.render_parse_tree_json(pt, source, parsed.tokens), indent=2, ensure_ascii=False
+            )
+        if fmt == "dot":
+            return parse_tree.render_parse_tree_dot(pt, source)
+        if fmt == "svg":
+            return parse_tree.render_parse_tree_svg(pt, source)
+    elif target == "ast":
+        if fmt == "text":
+            return ast_viz.render_ast_text(root, source)
+        if fmt == "json":
+            return json.dumps(ast_viz.render_ast_json(root, source), indent=2, ensure_ascii=False)
+        if fmt == "dot":
+            return ast_viz.render_ast_dot(root, source)
+        if fmt == "svg":
+            return ast_viz.render_ast_svg(root, source)
+    elif target == "compare":
+        if fmt == "text":
+            return compare.render_comparison_text(parsed)
+        if fmt == "json":
+            return json.dumps(compare.render_comparison_json(parsed), indent=2, ensure_ascii=False)
+        if fmt == "svg":
+            return compare.render_comparison_svg(parsed)
+    raise ValueError(f"Unsupported target/format combination: {target}/{fmt}")
 
 
 def read_source(arg: str, in_s: TextIO) -> str:
@@ -85,21 +94,22 @@ def handle_command(args: argparse.Namespace, in_s: TextIO, out_s: TextIO, err_s:
         if args.json:
             extra = {"parse_tree": parsed.parse_tree.to_dict()} if args.concrete else {}
             emit_json(out_s, {"ok": True, "command": "parse", "ast": parsed.ast.to_dict(), **extra})
+        elif args.concrete:
+            out_s.write(parse_tree.render_parse_tree_text(parsed.parse_tree, source) + "\n")
         else:
-            if args.concrete:
-                out_s.write(parse_tree.render_parse_tree_text(parsed.parse_tree, source) + "\n")
-            else:
-                out_s.write(ast_viz.render_ast_text(parsed.ast, source) + "\n")
+            out_s.write(ast_viz.render_ast_text(parsed.ast, source) + "\n")
     elif args.command == "check":
         toks = len([t for t in parsed.tokens if t.kind != "EOF"])
-        asts, pts = sum(1 for _ in parsed.ast.walk()), sum(1 for _ in parsed.parse_tree.walk())
+        asts = sum(1 for _ in parsed.ast.walk())
+        pts = sum(1 for _ in parsed.parse_tree.walk())
         if args.json:
             payload = {"ok": True, "command": "check", "valid": True, "token_count": toks, "ast_node_count": asts}
             emit_json(out_s, {**payload, "parse_tree_node_count": pts})
         else:
             out_s.write(f"Syntax OK: {toks} tokens, {pts} parse-tree nodes, {asts} AST nodes.\n")
     elif args.command in ("run", "trace"):
-        inc_trace, interp = args.command == "trace", Interpreter(max_steps=args.max_steps)
+        inc_trace = args.command == "trace"
+        interp = Interpreter(max_steps=args.max_steps)
         try:
             run_res = interp.run(parsed.ast, initial_state=parse_state_arg(args.state))
         except SIPLRuntimeError as exc:
@@ -159,7 +169,9 @@ def main(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    in_s, out_s, err_s = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
+    in_s = stdin or sys.stdin
+    out_s = stdout or sys.stdout
+    err_s = stderr or sys.stderr
     try:
         args = build_parser().parse_args(list(argv) if argv is not None else None)
     except SystemExit as exc:

@@ -1,21 +1,60 @@
-from collections.abc import Callable
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from lark import Lark, Tree, UnexpectedInput
+from lark import Token as LarkToken
+
 from sipl import ast
-from sipl.ast import Diagnostic, Program, SIPLSyntaxError
-from sipl.lexer import ParseNode, Token, tokenize
+from sipl.ast import Diagnostic, Program, SIPLSyntaxError, SourceSpan
 
+OP_NORM = {
+    "−": "-",
+    "∗": "*",
+    "/": "div",
+    "%": "mod",
+    "==": "=",
+    "≥": ">=",
+    "≤": "<=",
+    "≠": "!=",
+    "<>": "!=",
+    "∨": "or",
+    "||": "or",
+    "∧": "and",
+    "&&": "and",
+    "¬": "not",
+    "!": "not",
+}
 
-def _ops(spec: str) -> dict[str, tuple[str, str]]:
-    return {a: (b, c) for a, b, c in (p.split(":") for p in spec.split())}
-
-
-MUL_OPS = _ops("STAR:*:NA5 DIV:div:NA7 SLASH:div:NA7 MOD:mod:NA8 PERCENT:mod:NA8")
-ADD_OPS = _ops("PLUS:+:NA3 MINUS:-:NA4")
-REL_OPS = _ops("EQ:=:NB1 GT:>:NB2 GE:>=:NB6 LT:<:NB7 LE:<=:NB8 NE:!=:NB9")
-EXPR_FOLLOW = frozenset(MUL_OPS) | frozenset(ADD_OPS) | frozenset(REL_OPS)
+RULE_META = {
+    "np1_program": ("<програма>", "NP1"),
+    "ns1_assign": ("<оператор>", "NS1"),
+    "ns2_seq": ("<оператор>", "NS2"),
+    "ns3_if": ("<оператор>", "NS3"),
+    "ns4_while": ("<оператор>", "NS4"),
+    "ns5_block": ("<оператор>", "NS5"),
+    "ns6_skip": ("<оператор>", "NS6"),
+    "na1_num": ("<вираз>", "NA1"),
+    "na2_var": ("<вираз>", "NA2"),
+    "na3_add": ("<вираз>", "NA3"),
+    "na4_sub": ("<вираз>", "NA4"),
+    "na5_mult": ("<вираз>", "NA5"),
+    "na6_paren": ("<вираз>", "NA6"),
+    "na7_div": ("<вираз>", "NA7"),
+    "na8_mod": ("<вираз>", "NA8"),
+    "na_unary_neg": ("<вираз>", "NA_UNARY"),
+    "nb1_eq": ("<умова>", "NB1"),
+    "nb2_gt": ("<умова>", "NB2"),
+    "nb3_or": ("<умова>", "NB3"),
+    "nb4_neg": ("<умова>", "NB4"),
+    "nb5_paren": ("<умова>", "NB5"),
+    "nb6_ge": ("<умова>", "NB6"),
+    "nb7_lt": ("<умова>", "NB7"),
+    "nb8_le": ("<умова>", "NB8"),
+    "nb9_ne": ("<умова>", "NB9"),
+    "nb10_and": ("<умова>", "NB10"),
+}
 
 
 def load_grammar() -> str:
@@ -23,6 +62,50 @@ def load_grammar() -> str:
         if path.is_file():
             return path.read_text(encoding="utf-8")
     raise FileNotFoundError("Grammar file grammar/sipl.lark not found")
+
+
+_PARSER = Lark(load_grammar(), parser="lalr", propagate_positions=True, keep_all_tokens=True)
+
+
+@dataclass(frozen=True)
+class Token:
+    kind: str
+    lexeme: str
+    span: SourceSpan
+
+
+@dataclass(frozen=True)
+class ParseNode:
+    id: str
+    symbol: str
+    rule_id: str | None
+    span: SourceSpan
+    children: tuple["ParseNode", ...] = ()
+    token_value: str | None = None
+    leaf_index: int | None = None
+    ast_node_id: str | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return not self.children
+
+    def walk(self) -> Iterator["ParseNode"]:
+        yield self
+        for child in self.children:
+            yield from child.walk()
+
+    def leaves(self) -> list["ParseNode"]:
+        return [n for n in self.walk() if n.is_terminal]
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"symbol": self.symbol, "span": self.span.format_short()}
+        if self.rule_id is not None:
+            data["rule_id"] = self.rule_id
+        if self.leaf_index is not None:
+            data["leaf_index"] = self.leaf_index
+        if self.children:
+            data["children"] = [c.to_dict() for c in self.children]
+        return data
 
 
 @dataclass(frozen=True)
@@ -33,208 +116,114 @@ class ParseResult:
     ast: Program
 
     def to_dict(self, include_parse_tree: bool = True) -> dict[str, object]:
-        d: dict[str, object] = {"ast": self.ast.to_dict()}
-        return {**d, "parse_tree": self.parse_tree.to_dict()} if include_parse_tree else d
+        data: dict[str, object] = {"ast": self.ast.to_dict()}
+        if include_parse_tree:
+            data["parse_tree"] = self.parse_tree.to_dict()
+        return data
 
 
-class Parser:
-    def __init__(self, source: str, tokens: list[Token]) -> None:
-        self.source, self.tokens, self.pos = source, tokens, 0
-        self.seq = {"pt": 0, "ast": 0}
+def _tok_span(tok: LarkToken) -> SourceSpan:
+    line = tok.line or 1
+    col = tok.column or 1
+    end_line = tok.end_line or line
+    end_col = tok.end_column or (col + len(tok.value))
+    start = tok.start_pos or 0
+    end = tok.end_pos or (start + len(tok.value))
+    return SourceSpan(line, col, end_line, end_col, start, end)
 
-    def next_id(self, prefix: str) -> str:
-        val = self.seq[prefix]
-        self.seq[prefix] += 1
-        return f"{prefix}_{val}"
 
-    def cur(self) -> Token:
-        return self.tokens[self.pos]
+class _Builder:
+    def __init__(self) -> None:
+        self.pt_id = 0
+        self.ast_id = 0
 
-    def bump(self) -> Token:
-        tok = self.tokens[self.pos]
-        self.pos += 1
-        return tok
+    def next_pt(self) -> str:
+        self.pt_id += 1
+        return f"pt_{self.pt_id - 1}"
 
-    def tok_label(self, tok: Token) -> str:
-        return "end of file" if tok.kind == "EOF" else repr(tok.lexeme)
+    def next_ast(self) -> str:
+        self.ast_id += 1
+        return f"ast_{self.ast_id - 1}"
 
-    def err(self, code: str, msg: str, tok: Token | None = None, hint: str | None = None) -> SIPLSyntaxError:
-        return SIPLSyntaxError(Diagnostic(code, "error", msg, (tok or self.cur()).span, hint))
+    def build(self, node: Tree[LarkToken] | LarkToken) -> tuple[ParseNode, Any]:
+        if isinstance(node, LarkToken):
+            pt = ParseNode(self.next_pt(), node.value, None, _tok_span(node), token_value=node.value)
+            return pt, node
 
-    def consume(self, kind: str, msg: str, hint: str | None = None) -> Token:
-        tok = self.cur()
-        if tok.kind != kind:
-            raise self.err("SYN001", f"{msg}, got {self.tok_label(tok)}", tok, hint)
-        self.pos += 1
-        return tok
+        rule_name = str(node.data)
+        sym, rule_id = RULE_META[rule_name]
+        built = [self.build(c) for c in node.children]
+        pts = tuple(p for p, _ in built)
+        vals = [v for _, v in built]
+        span = pts[0].span
+        for p in pts[1:]:
+            span = span.merge(p.span)
+        aid = self.next_ast()
 
-    def nt(self, sym: str, cat: str, rule: str, items: list[Token | ParseNode], aid: str) -> ParseNode:
-        ch = tuple(
-            ParseNode(self.next_id("pt"), x.lexeme, "Terminal", None, x.span, (), x.lexeme, ast_node_id=aid)
-            if isinstance(x, Token)
-            else x
-            for x in items
-        )
-        span = ch[0].span
-        for c in ch[1:]:
-            span = span.merge(c.span)
-        return ParseNode(self.next_id("pt"), sym, cat, rule, span, ch, ast_node_id=aid)
+        if rule_name == "np1_program":
+            anode: Any = ast.Program(span=span, node_id=aid, body=vals[1])
+        elif rule_name == "ns1_assign":
+            anode = ast.Assign(span=span, node_id=aid, var=vals[0].value, var_span=pts[0].span, expr=vals[2])
+        elif rule_name == "ns2_seq":
+            anode = ast.Seq(span=span, node_id=aid, first=vals[0], second=vals[2])
+        elif rule_name == "ns3_if":
+            anode = ast.IfThenElse(span=span, node_id=aid, condition=vals[1], then_branch=vals[3], else_branch=vals[5])
+        elif rule_name == "ns4_while":
+            anode = ast.WhileDo(span=span, node_id=aid, condition=vals[1], body=vals[3])
+        elif rule_name == "ns5_block":
+            anode = ast.Block(span=span, node_id=aid, body=vals[1])
+        elif rule_name == "ns6_skip":
+            anode = ast.Skip(span=span, node_id=aid)
+        elif rule_name == "na1_num":
+            anode = ast.NumberLiteral(span=span, node_id=aid, value=int(vals[0].value))
+        elif rule_name == "na2_var":
+            anode = ast.VariableRef(span=span, node_id=aid, name=vals[0].value)
+        elif rule_name == "na_unary_neg":
+            if isinstance(vals[1], ast.NumberLiteral):
+                anode = ast.NumberLiteral(span=span, node_id=vals[1].node_id, value=-vals[1].value)
+            else:
+                anode = ast.UnaryArithOp(span=span, node_id=aid, op="-", operand=vals[1])
+        elif rule_name in ("na6_paren", "nb5_paren"):
+            anode = vals[1]
+        elif rule_name.startswith("na"):
+            op = OP_NORM.get(vals[1].value, vals[1].value)
+            anode = ast.BinaryArithOp(span=span, node_id=aid, rule_id=rule_id, op=op, left=vals[0], right=vals[2])
+        elif rule_name in ("nb3_or", "nb10_and"):
+            op = OP_NORM.get(vals[1].value, vals[1].value)
+            anode = ast.BoolBinaryOp(span=span, node_id=aid, rule_id=rule_id, op=op, left=vals[0], right=vals[2])
+        elif rule_name == "nb4_neg":
+            anode = ast.BoolNot(span=span, node_id=aid, operand=vals[1])
+        else:
+            op = OP_NORM.get(vals[1].value, vals[1].value)
+            anode = ast.RelOp(span=span, node_id=aid, rule_id=rule_id, op=op, left=vals[0], right=vals[2])
 
-    def make(
-        self, sym: str, cat: str, rule: str, items: list[Token | ParseNode], cls: type[Any], **kw: Any
-    ) -> tuple[ParseNode, Any]:
-        aid = self.next_id("ast")
-        pt = self.nt(sym, cat, rule, items, aid)
-        return pt, cls(span=pt.span, node_id=aid, rule_id=rule, **kw)
+        linked = tuple(replace(p, ast_node_id=anode.node_id) if p.is_terminal else p for p in pts)
+        return ParseNode(self.next_pt(), sym, rule_id, span, linked, ast_node_id=anode.node_id), anode
 
-    def number_leaves(self, root: ParseNode, counter: list[int] | None = None) -> ParseNode:
-        cnt = counter if counter is not None else [1]
-        if root.is_terminal:
-            idx = cnt[0]
-            cnt[0] += 1
-            return replace(root, leaf_index=idx)
-        return replace(root, children=tuple(self.number_leaves(c, cnt) for c in root.children))
 
-    def bin_loop(
-        self, sub: Callable[[], tuple[ParseNode, Any]], ops: dict[str, tuple[str, str]], cls: type[Any], s: str, c: str
-    ) -> tuple[ParseNode, Any]:
-        l_pt, l_ast = sub()
-        while self.cur().kind in ops:
-            op_tok, (r_pt, r_ast) = self.bump(), sub()
-            op, rule = ops[op_tok.kind]
-            l_pt, l_ast = self.make(s, c, rule, [l_pt, op_tok, r_pt], cls, op=op, left=l_ast, right=r_ast)
-        return l_pt, l_ast
-
-    def parse_program(self) -> tuple[ParseNode, Program]:
-        if self.cur().kind == "EOF":
-            raise self.err("SYN002", "Empty SIPL program; expected 'begin <statement> end'")
-        b_tok = self.consume("KW_BEGIN", "Program must start with 'begin'")
-        body_pt, body_ast = self.parse_stmt_seq()
-        e_tok = self.consume("KW_END", "Expected 'end' to close program")
-        if self.cur().kind != "EOF":
-            raise self.err("SYN003", f"Unexpected token '{self.cur().lexeme}' after program 'end'")
-        pt, root = self.make("<програма>", "Prog", "NP1", [b_tok, body_pt, e_tok], ast.Program, body=body_ast)
-        return self.number_leaves(pt), root
-
-    def parse_stmt_seq(self) -> tuple[ParseNode, ast.Stmt]:
-        l_pt, l_ast = self.parse_stmt_atom()
-        while self.cur().kind == "SEMI":
-            s_tok = self.bump()
-            if self.cur().kind in ("KW_END", "EOF", "KW_ELSE"):
-                raise self.err("SYN004", f"Expected statement after ';' before '{self.cur().lexeme or 'EOF'}'", s_tok)
-            r_pt, r_ast = self.parse_stmt_atom()
-            l_pt, l_ast = self.make("<оператор>", "Stm", "NS2", [l_pt, s_tok, r_pt], ast.Seq, first=l_ast, second=r_ast)
-        return l_pt, l_ast
-
-    def make_num(self, tok: Token, value: int) -> tuple[ParseNode, ast.NumberLiteral]:
-        aid = self.next_id("ast")
-        pt = self.nt("<вираз>", "Aexp", "NA1", [self.nt("<число>", "Num", "NN", [tok], aid)], aid)
-        return pt, ast.NumberLiteral(value=value, span=tok.span, node_id=aid)
-
-    def parse_stmt_atom(self) -> tuple[ParseNode, ast.Stmt]:
-        tok = self.cur()
-        if tok.kind == "IDENT":
-            self.pos += 1
-            a_tok = self.consume("ASSIGN", f"Expected ':=' after variable '{tok.lexeme}'", "Use ':=' for assignment.")
-            e_pt, e_ast = self.parse_aexp()
-            aid = self.next_id("ast")
-            v_pt = self.nt("<змінна>", "Var", "NV", [tok], aid)
-            pt = self.nt("<оператор>", "Stm", "NS1", [v_pt, a_tok, e_pt], aid)
-            return pt, ast.Assign(var=tok.lexeme, var_span=tok.span, expr=e_ast, span=pt.span, node_id=aid)
-        if tok.kind == "KW_IF":
-            self.pos += 1
-            c_pt, c_ast = self.parse_bexp()
-            t_tok = self.consume("KW_THEN", "Expected 'then' after 'if' condition")
-            t_pt, t_ast = self.parse_stmt_atom()
-            e_tok = self.consume("KW_ELSE", "Expected 'else' branch in 'if' statement")
-            e_pt, e_ast = self.parse_stmt_atom()
-            kw = {"condition": c_ast, "then_branch": t_ast, "else_branch": e_ast}
-            return self.make("<оператор>", "Stm", "NS3", [tok, c_pt, t_tok, t_pt, e_tok, e_pt], ast.IfThenElse, **kw)
-        if tok.kind == "KW_WHILE":
-            self.pos += 1
-            c_pt, c_ast = self.parse_bexp()
-            d_tok = self.consume("KW_DO", "Expected 'do' after 'while' condition")
-            b_pt, b_ast = self.parse_stmt_atom()
-            items = [tok, c_pt, d_tok, b_pt]
-            return self.make("<оператор>", "Stm", "NS4", items, ast.WhileDo, condition=c_ast, body=b_ast)
-        if tok.kind == "KW_BEGIN":
-            self.pos += 1
-            b_pt, b_ast = self.parse_stmt_seq()
-            e_tok = self.consume("KW_END", "Expected 'end' to close 'begin' block")
-            return self.make("<оператор>", "Stm", "NS5", [tok, b_pt, e_tok], ast.Block, body=b_ast)
-        if tok.kind == "KW_SKIP":
-            return self.make("<оператор>", "Stm", "NS6", [self.bump()], ast.Skip)
-        raise self.err("SYN005", f"Expected statement, got {self.tok_label(tok)}", tok)
-
-    def parse_aexp(self) -> tuple[ParseNode, ast.AExpr]:
-        def term() -> tuple[ParseNode, ast.AExpr]:
-            return self.bin_loop(self.parse_afactor, MUL_OPS, ast.BinaryArithOp, "<вираз>", "Aexp")
-
-        return self.bin_loop(term, ADD_OPS, ast.BinaryArithOp, "<вираз>", "Aexp")
-
-    def parse_afactor(self) -> tuple[ParseNode, ast.AExpr]:
-        tok = self.cur()
-        if tok.kind == "MINUS":
-            nxt = self.tokens[min(self.pos + 1, len(self.tokens) - 1)]
-            if nxt.kind == "NUMBER" and tok.span.end_offset == nxt.span.start_offset:
-                self.pos += 2
-                neg = Token("NUMBER", tok.lexeme + nxt.lexeme, tok.lexeme + nxt.lexeme, tok.span.merge(nxt.span))
-                return self.make_num(neg, -int(nxt.value))
-            self.pos += 1
-            op_pt, op_ast = self.parse_afactor()
-            return self.make("<вираз>", "Aexp", "NA_UNARY", [tok, op_pt], ast.UnaryArithOp, op="-", operand=op_ast)
-        if tok.kind == "LPAREN":
-            self.pos += 1
-            in_pt, in_ast = self.parse_aexp()
-            rp = self.consume("RPAREN", "Expected ')' to close arithmetic expression")
-            return self.nt("<вираз>", "Aexp", "NA6", [tok, in_pt, rp], in_ast.node_id), in_ast
-        if tok.kind == "NUMBER":
-            return self.make_num(self.bump(), int(tok.value))
-        if tok.kind == "IDENT":
-            self.pos += 1
-            aid = self.next_id("ast")
-            pt = self.nt("<вираз>", "Aexp", "NA2", [self.nt("<змінна>", "Var", "NV", [tok], aid)], aid)
-            return pt, ast.VariableRef(name=tok.lexeme, span=tok.span, node_id=aid)
-        raise self.err("SYN006", f"Expected arithmetic expression, got {self.tok_label(tok)}", tok)
-
-    def parse_bexp(self) -> tuple[ParseNode, ast.BExpr]:
-        def conj() -> tuple[ParseNode, ast.BExpr]:
-            return self.bin_loop(self.parse_bnot, {"AND": ("and", "NB10")}, ast.BoolBinaryOp, "<умова>", "Bexp")
-
-        return self.bin_loop(conj, {"OR": ("or", "NB3")}, ast.BoolBinaryOp, "<умова>", "Bexp")
-
-    def parse_bnot(self) -> tuple[ParseNode, ast.BExpr]:
-        if self.cur().kind == "NOT":
-            tok = self.bump()
-            in_pt, in_ast = self.parse_bnot()
-            return self.make("<умова>", "Bexp", "NB4", [tok, in_pt], ast.BoolNot, operand=in_ast)
-        return self.parse_batom()
-
-    def parse_batom(self) -> tuple[ParseNode, ast.BExpr]:
-        if self.cur().kind == "LPAREN":
-            saved, lp = (self.pos, dict(self.seq)), self.bump()
-            try:
-                in_pt, in_ast = self.parse_bexp()
-                rp = self.consume("RPAREN", "Expected ')' to close condition")
-                if self.cur().kind not in EXPR_FOLLOW:
-                    return self.nt("<умова>", "Bexp", "NB5", [lp, in_pt, rp], in_ast.node_id), in_ast
-            except SIPLSyntaxError:
-                pass
-            self.pos, self.seq = saved
-        l_pt, l_ast = self.parse_aexp()
-        rel_tok = self.cur()
-        if rel_tok.kind not in REL_OPS:
-            msg = f"Expected relational operator in condition, got {self.tok_label(rel_tok)}"
-            raise self.err("SYN007", msg, rel_tok)
-        op, rule = REL_OPS[self.bump().kind]
-        r_pt, r_ast = self.parse_aexp()
-        return self.make("<умова>", "Bexp", rule, [l_pt, rel_tok, r_pt], ast.RelOp, op=op, left=l_ast, right=r_ast)
+def _number_leaves(root: ParseNode, counter: list[int] | None = None) -> ParseNode:
+    cnt = counter if counter is not None else [1]
+    if root.is_terminal:
+        idx = cnt[0]
+        cnt[0] += 1
+        return replace(root, leaf_index=idx)
+    return replace(root, children=tuple(_number_leaves(c, cnt) for c in root.children))
 
 
 def parse_all(source: str) -> ParseResult:
-    tokens = tokenize(source)
-    pt, ast_root = Parser(source, tokens).parse_program()
-    return ParseResult(source, tuple(tokens), pt, ast_root)
+    try:
+        tree = _PARSER.parse(source)
+    except UnexpectedInput as exc:
+        line = exc.line or 1
+        col = exc.column or 1
+        pos = exc.pos_in_stream or 0
+        span = SourceSpan(line, col, line, col + 1, pos, min(len(source), pos + 1))
+        raise SIPLSyntaxError(Diagnostic("SYN001", "error", str(exc).splitlines()[0], span)) from exc
+
+    pt, ast_root = _Builder().build(tree)
+    pt = _number_leaves(pt)
+    tokens = tuple(Token(leaf.symbol, leaf.token_value or leaf.symbol, leaf.span) for leaf in pt.leaves())
+    return ParseResult(source, tokens, pt, ast_root)
 
 
 def parse(source: str) -> Program:

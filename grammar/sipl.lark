@@ -42,7 +42,7 @@ program: "begin" stmt "end"                              -> np1_program
       | aexp ("<=" | "≤") aexp                           -> nb8_le
       | aexp ("!=" | "<>" | "≠") aexp                    -> nb9_ne
 
-NUMBER: /-?[0-9]+/
+NUMBER: /[0-9]+/
 IDENT: /(?!\b(?:begin|end|if|then|else|while|do|skip|div|mod|or|and|not)\b)[A-Za-z_][A-Za-z0-9_]*/
 
 COMMENT_LINE: /(#|\/\/)[^\n]*/

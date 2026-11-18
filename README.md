@@ -6,8 +6,7 @@
 
 - `grammar/sipl.lark` — граматика мови SIPL
 - `src/sipl/ast.py` — типізоване AST, `SourceSpan` і класи помилок
-- `src/sipl/lexer.py` — лексичний аналізатор, токени і `ParseNode`
-- `src/sipl/parser.py` — синтаксичний аналізатор (Parse Tree + AST)
+- `src/sipl/parser.py` — парсер на основі `lark` (`ParseNode` + `AST`)
 - `src/sipl/interpreter/` — виконання програм, стан змінних та подієвий trace
 - `src/sipl/visualization/` — дерево виводу, AST та порівняння (`text`, `json`, `dot`, `svg`)
 - `src/sipl/conformance.py` — запуск набору тестів відповідності

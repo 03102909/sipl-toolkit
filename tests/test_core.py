@@ -14,7 +14,6 @@ from sipl.interpreter import trace
 from sipl.interpreter.runtime import Interpreter, run_program
 from sipl.interpreter.state import ExecutionState, parse_state_arg
 from sipl.interpreter.trace import TraceEvent, TraceEventType
-from sipl.lexer import KEYWORDS
 from sipl.parser import load_grammar, parse, parse_all
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -65,7 +64,7 @@ class TestSIPLCore(unittest.TestCase):
         g = load_grammar()
         for rule in ("program:", "?stmt:", "?aexp:", "?bexp:"):
             self.assertIn(rule, g)
-        self.assertIn("while", KEYWORDS)
+        self.assertIn("while", g)
         self.assertGreaterEqual(len(POSITIVE_PROGRAMS), 10)
         for name, src in POSITIVE_PROGRAMS:
             with self.subTest(pos=name):

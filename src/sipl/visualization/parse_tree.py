@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sipl.lexer import ParseNode, Token
+from sipl.parser import ParseNode, Token
 from sipl.visualization.ast_viz import VisualNode, render_dot_tree, render_text_tree
 
 

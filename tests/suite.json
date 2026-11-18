@@ -110,8 +110,8 @@
       "source": "begin\n  X := 1;\nend",
       "expected": {
         "exit_code": 2,
-        "error_code": "SYN004",
-        "error_line": 2
+        "error_code": "SYN001",
+        "error_line": 3
       }
     },
     {
