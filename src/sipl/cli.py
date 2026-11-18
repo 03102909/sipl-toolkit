@@ -113,8 +113,8 @@ def handle_command(args: argparse.Namespace, in_s: TextIO, out_s: TextIO, err_s:
         try:
             run_res = interp.run(parsed.ast, initial_state=parse_state_arg(args.state))
         except SIPLRuntimeError as exc:
-            extra = {"trace": interp.last_trace.to_dict()} if inc_trace and interp.last_trace else None
-            return emit_diag(exc, source, args.command, args.json, out_s, err_s, extra)
+            trace_extra = {"trace": interp.last_trace.to_dict()} if inc_trace and interp.last_trace else None
+            return emit_diag(exc, source, args.command, args.json, out_s, err_s, trace_extra)
         if args.json:
             emit_json(out_s, {"ok": True, "command": args.command, **run_res.to_dict(include_trace=inc_trace)})
         else:
